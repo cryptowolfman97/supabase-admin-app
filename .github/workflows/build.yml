@@ -61,9 +61,10 @@ jobs:
             "ndk;25.1.8937393"
 
       - name: Build APK
-        env:
-          PATH: /home/runner/android-sdk/cmdline-tools/latest/bin:/home/runner/android-sdk/platform-tools:${{ env.PATH }}
         run: |
+          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
+          which git
+          which sdkmanager
           buildozer android debug
 
       - name: Upload APK artifact
