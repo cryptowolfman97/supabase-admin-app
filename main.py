@@ -41,7 +41,7 @@ PURPLE = "#5d3a84"
 YELLOW = "#6d5818"
 Window.clearcolor = get_color_from_hex(BG)
 
-APP_TITLE = "Supabase Admin by SHV"
+APP_TITLE = "SHV Supa"
 APP_SUBTITLE = "Standalone Supabase management app"
 SUPABASE_MANAGEMENT_API_BASE = "https://api.supabase.com/v1"
 CONFIG_FILE = "supabase_admin_by_shv_config.json"
@@ -52,6 +52,7 @@ MODULES = [
     ("credentials", "Connection"),
     ("overview", "Overview"),
     ("projects", "Projects"),
+    ("sql", "SQL Editor"),
     ("users", "Users"),
     ("tables", "Tables"),
     ("storage", "Storage"),
@@ -429,20 +430,21 @@ class SectionCard(BoxLayout):
         self._accent_bar.size = (dp(4), self.height)
 
 
-def make_wrapped_label(text, color=TEXT, bold=False, font_size="13sp", min_height=dp(22)):
+def make_wrapped_label(text, color=TEXT, bold=False, font_size="13sp", min_height=dp(22), halign="left"):
     lbl = Label(
         text=str(text or ""),
         color=get_color_from_hex(color),
         bold=bold,
         font_size=font_size,
-        halign="left",
+        halign=halign,
         valign="top",
         size_hint_y=None,
     )
     lbl.height = min_height
 
     def _sync_width(*_):
-        lbl.text_size = (max(dp(220), lbl.width), None)
+        # Bound strictly to the widget width to prevent any overflow bleeding!
+        lbl.text_size = (lbl.width, None)
 
     def _sync_height(_inst, texture_size):
         lbl.height = max(min_height, texture_size[1])
@@ -479,20 +481,52 @@ def make_stat_card(value, label, accent=CYAN):
         card._bg = RoundedRectangle(pos=card.pos, size=card.size, radius=[16])
         Color(rgba=get_color_from_hex(accent))
         card._line = RoundedRectangle(pos=card.pos, size=(card.width, dp(3)), radius=[16])
-    card.bind(
-        pos=lambda inst, *_: _sync_stat_bg(inst),
-        size=lambda inst, *_: _sync_stat_bg(inst),
+        
+    def _sync_bg(*_):
+        card._bg.pos = card.pos
+        card._bg.size = card.size
+        card._line.pos = (card.x, card.top - dp(3))
+        card._line.size = (card.width, dp(3))
+        
+    card.bind(pos=_sync_bg, size=_sync_bg)
+    
+    val_str = str(value)
+    # Dynamic font sizing to prevent overflowing small column boxes
+    fs = "18sp"
+    if len(val_str) > 10:
+        fs = "14sp"
+    if len(val_str) > 16:
+        fs = "12sp"
+    if len(val_str) > 20:
+        val_str = val_str[:17] + "..."
+
+    # Use a truncated label specifically for grids to guarantee layout safety
+    val_lbl = Label(
+        text=val_str,
+        color=get_color_from_hex(TEXT),
+        bold=True,
+        font_size=fs,
+        halign="left",
+        valign="middle",
+        shorten=True,
+        shorten_from="right"
     )
-    card.add_widget(make_wrapped_label(value, color=TEXT, bold=True, font_size="18sp", min_height=dp(24)))
-    card.add_widget(make_wrapped_label(label, color=SUBTEXT, font_size="11sp", min_height=dp(18)))
+    val_lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
+    
+    sub_lbl = Label(
+        text=str(label),
+        color=get_color_from_hex(SUBTEXT),
+        font_size="11sp",
+        halign="left",
+        valign="middle",
+        shorten=True,
+        shorten_from="right"
+    )
+    sub_lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
+
+    card.add_widget(val_lbl)
+    card.add_widget(sub_lbl)
     return card
-
-
-def _sync_stat_bg(card):
-    card._bg.pos = card.pos
-    card._bg.size = card.size
-    card._line.pos = (card.x, card.top - dp(3))
-    card._line.size = (card.width, dp(3))
 
 
 def make_two_col_grid():
@@ -520,15 +554,30 @@ def make_item_card(title, subtitle="", body_lines=None, accent=CYAN, json_payloa
     card = SectionCard(title, subtitle, accent=accent)
     for line in (body_lines or []):
         card.add_widget(make_wrapped_label(line, color=SUBTEXT, font_size="12sp", min_height=dp(18)))
-    row = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(8))
+    
+    all_buttons = []
     if json_payload is not None:
         copy_btn = NeonButton(text=copy_label, bg_hex=BLUE)
         copy_btn.bind(on_release=lambda *_: copy_to_clipboard(copy_label, pretty_json(json_payload)))
-        row.add_widget(copy_btn)
+        all_buttons.append(copy_btn)
+        
     for btn in (extra_buttons or []):
-        row.add_widget(btn)
-    if len(row.children) > 0:
-        card.add_widget(row)
+        all_buttons.append(btn)
+        
+    if all_buttons:
+        num_btns = len(all_buttons)
+        cols = min(3, num_btns)
+        rows = (num_btns + cols - 1) // cols
+        grid_height = (dp(42) * rows) + (dp(8) * (rows - 1))
+        
+        btn_grid = GridLayout(cols=cols, spacing=dp(8), size_hint_y=None, height=grid_height)
+        for btn in all_buttons:
+            btn.size_hint_y = None
+            btn.height = dp(42)
+            btn_grid.add_widget(btn)
+            
+        card.add_widget(btn_grid)
+        
     return card
 
 
@@ -572,6 +621,7 @@ def load_settings():
         "timeout_seconds": int(data.get("timeout_seconds", 40) or 40),
         "table_preview_rows": int(data.get("table_preview_rows", 5) or 5),
         "auto_load": bool(data.get("auto_load", True)),
+        "app_pin": str(data.get("app_pin", "") or "").strip(),
     }
 
 
@@ -580,6 +630,7 @@ def save_settings(data):
         "timeout_seconds": max(10, min(120, int(data.get("timeout_seconds", 40) or 40))),
         "table_preview_rows": max(1, min(20, int(data.get("table_preview_rows", 5) or 5))),
         "auto_load": bool(data.get("auto_load", True)),
+        "app_pin": str(data.get("app_pin", "") or "").strip(),
     }
     save_json(file_path(SETTINGS_FILE), clean)
 
@@ -646,8 +697,10 @@ def supabase_error_text(resp):
 
 def request_json(method, url, headers, params=None, json_body=None, timeout=40):
     resp = requests.request(method, url, headers=headers, params=params, json=json_body, timeout=timeout)
-    if resp.status_code not in (200, 201):
+    if resp.status_code not in (200, 201, 204):
         raise RuntimeError(supabase_error_text(resp))
+    if resp.status_code == 204:
+        return {"status": "Success (204 No Content)"}
     raw = str(resp.text or "").strip()
     if not raw:
         return {}
@@ -688,6 +741,60 @@ def project_post(cfg, path, json_body=None, params=None, timeout=40, allow_anon=
         json_body=json_body,
         timeout=timeout,
     )
+
+
+def management_post(cfg, path, json_body=None, params=None, timeout=40):
+    return request_json(
+        "POST",
+        SUPABASE_MANAGEMENT_API_BASE + path,
+        management_headers(cfg),
+        params=params,
+        json_body=json_body,
+        timeout=timeout,
+    )
+
+def management_delete(cfg, path, json_body=None, params=None, timeout=40):
+    return request_json(
+        "DELETE",
+        SUPABASE_MANAGEMENT_API_BASE + path,
+        management_headers(cfg),
+        params=params,
+        json_body=json_body,
+        timeout=timeout,
+    )
+
+def project_put(cfg, path, json_body=None, params=None, timeout=40, allow_anon=False):
+    url, _ = require_project(cfg, allow_anon=allow_anon)
+    return request_json(
+        "PUT",
+        url + path,
+        project_headers(cfg, allow_anon=allow_anon),
+        params=params,
+        json_body=json_body,
+        timeout=timeout,
+    )
+
+def project_patch(cfg, path, json_body=None, params=None, timeout=40, allow_anon=False):
+    url, _ = require_project(cfg, allow_anon=allow_anon)
+    return request_json(
+        "PATCH",
+        url + path,
+        project_headers(cfg, allow_anon=allow_anon),
+        params=params,
+        json_body=json_body,
+        timeout=timeout,
+    )
+
+def project_delete(cfg, path, params=None, timeout=40, allow_anon=False):
+    url, _ = require_project(cfg, allow_anon=allow_anon)
+    return request_json(
+        "DELETE",
+        url + path,
+        project_headers(cfg, allow_anon=allow_anon),
+        params=params,
+        timeout=timeout,
+    )
+
 
 
 def auth_password_login(cfg, timeout=40):
@@ -931,8 +1038,6 @@ def list_tables(cfg, timeout=40):
 
 
 def preview_table(cfg, table_name, schema_name="public", limit=5, timeout=40):
-    if str(schema_name or "public").strip() != "public":
-        return []
     if not str(table_name or "").strip():
         return []
     data = project_get(
@@ -1222,13 +1327,127 @@ class SupabaseAdminRoot(BoxLayout):
         self.log_range_value = "24 Hours"
         self.table_search_value = ""
         self.user_search_value = ""
+        self.sql_query_value = "SELECT * FROM auth.users LIMIT 10;"
+        self.sql_result_value = ""
+        
         self.preview_cache = {}
         self.credential_inputs = {}
         self.settings_inputs = {}
         self.tab_buttons = {}
 
+        self.is_locked = bool(self.settings_data.get("app_pin"))
+        if self.is_locked:
+            self._build_pin_screen()
+        else:
+            self._build_shell()
+            self.switch_tab("dashboard")
+
+    # ---------------------------
+    # PIN Security System
+    # ---------------------------
+    def _create_pin_pad(self, title_text, on_submit, on_cancel=None):
+        container = BoxLayout(orientation="vertical", spacing=dp(16), padding=dp(20))
+        
+        title = Label(text=title_text, color=get_color_from_hex(TEXT), font_size="20sp", bold=True, size_hint_y=None, height=dp(40))
+        container.add_widget(title)
+
+        display = Label(text="_ _ _ _", color=get_color_from_hex(CYAN), font_size="36sp", bold=True, size_hint_y=None, height=dp(60))
+        container.add_widget(display)
+
+        grid = GridLayout(cols=3, spacing=dp(10), size_hint_y=None, height=dp(300))
+        buffer = {"pin": ""}
+
+        def update_display():
+            filled = len(buffer["pin"])
+            empty = 4 - filled
+            display.text = " ".join(["*"] * filled + ["_"] * empty)
+
+        def on_num(btn):
+            if len(buffer["pin"]) < 4:
+                buffer["pin"] += btn.text
+                update_display()
+                if len(buffer["pin"]) == 4:
+                    Clock.schedule_once(lambda dt: submit(), 0.1)
+
+        def submit():
+            on_submit(buffer["pin"])
+            buffer["pin"] = ""
+            update_display()
+
+        def on_clear(*_):
+            buffer["pin"] = ""
+            update_display()
+
+        def on_back(*_):
+            buffer["pin"] = buffer["pin"][:-1]
+            update_display()
+
+        buttons = [
+            ("1", on_num), ("2", on_num), ("3", on_num),
+            ("4", on_num), ("5", on_num), ("6", on_num),
+            ("7", on_num), ("8", on_num), ("9", on_num),
+            ("C", on_clear), ("0", on_num), ("<", on_back)
+        ]
+
+        for text, handler in buttons:
+            btn = NeonButton(text=text, bg_hex=CARD_2, font_size="24sp")
+            btn.bind(on_release=handler)
+            grid.add_widget(btn)
+
+        container.add_widget(grid)
+
+        if on_cancel:
+            cancel_btn = NeonButton(text="Cancel", bg_hex=RED, size_hint_y=None, height=dp(46))
+            cancel_btn.bind(on_release=on_cancel)
+            container.add_widget(cancel_btn)
+
+        container.add_widget(Widget())
+        return container
+
+    def _build_pin_screen(self):
+        self.clear_widgets()
+        def check_pin(pin):
+            if pin == self.settings_data.get("app_pin"):
+                self._unlock_app()
+            else:
+                info_popup("Access Denied", "Incorrect PIN.")
+        pad = self._create_pin_pad("Enter PIN to Unlock App", check_pin)
+        self.add_widget(pad)
+
+    def _unlock_app(self):
+        self.is_locked = False
         self._build_shell()
         self.switch_tab("dashboard")
+
+    def _open_pin_setup_popup(self):
+        self._setup_step = 1
+        self._temp_pin = ""
+        popup = Popup(title="Set App PIN", size_hint=(0.95, 0.85), background_color=get_color_from_hex(CARD), separator_color=get_color_from_hex(CYAN))
+
+        def handle_pin(pin):
+            if self._setup_step == 1:
+                self._temp_pin = pin
+                self._setup_step = 2
+                popup.content = self._create_pin_pad("Confirm your new PIN", handle_pin, on_cancel=popup.dismiss)
+            else:
+                if pin == self._temp_pin:
+                    self.settings_data["app_pin"] = pin
+                    save_settings(self.settings_data)
+                    popup.dismiss()
+                    info_popup("Success", "App Security PIN has been activated.")
+                    self.render_current_tab()
+                else:
+                    info_popup("Error", "PINs did not match. Setup aborted.")
+                    popup.dismiss()
+
+        popup.content = self._create_pin_pad("Enter a 4-digit PIN", handle_pin, on_cancel=popup.dismiss)
+        popup.open()
+
+    def _remove_pin(self):
+        self.settings_data["app_pin"] = ""
+        save_settings(self.settings_data)
+        info_popup("Success", "App Security PIN has been removed.")
+        self.render_current_tab()
 
     # ---------------------------
     # Shell
@@ -1293,19 +1512,142 @@ class SupabaseAdminRoot(BoxLayout):
         if self.status_progress.value >= 100:
             self.status_progress.value = 0
 
-    def update_tab_styles(self):
-        for key, btn in self.tab_buttons.items():
-            if key == self.current_tab:
-                btn._bg_hex = GREEN
-                btn._fill_bg.size = btn._fill_bg.size
-                btn.color = (0, 0, 0, 1)
-                with btn.canvas.before:
-                    pass
-                btn._fill_bg.texture = None
-                btn.canvas.ask_update()
-                btn.background_color = (0, 0, 0, 0)
-            else:
-                btn.color = get_color_from_hex(TEXT)
+    # ---------------------------
+    # Generic CRUD Execution Engine
+    # ---------------------------
+    def _action_popup(self, title, endpoint, method="POST", use_management=False, require_project_admin=False, payload_template=None, success_callback=None):
+        content = BoxLayout(orientation="vertical", spacing=dp(10), padding=dp(12))
+        info = make_wrapped_label(f"Method: {method}\nTarget: {endpoint}", color=SUBTEXT, min_height=dp(40))
+        content.add_widget(info)
+
+        body_input = None
+        if payload_template is not None:
+            content.add_widget(make_wrapped_label("JSON Payload:", color=TEXT, bold=True, min_height=dp(20)))
+            body_input = make_input(multiline=True, height=dp(200))
+            body_input.text = pretty_json(payload_template)
+            content.add_widget(body_input)
+            add_copy_clear_paste_row(content, body_input, label_for_copy="JSON Payload", include_copy=True)
+            
+        row = BoxLayout(size_hint_y=None, height=dp(42), spacing=dp(8))
+        submit_btn = NeonButton(text="Execute Action", bg_hex=RED if method == "DELETE" else GREEN)
+        close_btn = NeonButton(text="Cancel", bg_hex=CARD_2)
+        row.add_widget(submit_btn)
+        row.add_widget(close_btn)
+        content.add_widget(row)
+        
+        popup = Popup(
+            title=title, 
+            content=content, 
+            size_hint=(0.94, 0.75), 
+            separator_color=get_color_from_hex(CYAN),
+            background_color=get_color_from_hex(CARD)
+        )
+        
+        def _on_submit(*_):
+            payload = None
+            if body_input and str(body_input.text).strip():
+                try:
+                    payload = json.loads(body_input.text)
+                except Exception as e:
+                    info_popup("Invalid JSON", f"Please fix the JSON formatting:\n{e}")
+                    return
+            
+            popup.dismiss()
+            self._execute_action(title, endpoint, method, payload, use_management, require_project_admin, success_callback)
+            
+        submit_btn.bind(on_release=_on_submit)
+        close_btn.bind(on_release=popup.dismiss)
+        popup.open()
+
+    def _update_row_popup(self, table_name, pk_guess):
+        content = BoxLayout(orientation="vertical", spacing=dp(10), padding=dp(12))
+        info = make_wrapped_label(f"Target Table: {table_name}\nTo update an existing row, provide its match column and value.", color=SUBTEXT, min_height=dp(40))
+        content.add_widget(info)
+        
+        match_box = GridLayout(cols=2, spacing=dp(8), size_hint_y=None, height=dp(46))
+        col_input = make_input("Match Col (e.g. id)")
+        col_input.text = str(pk_guess) if pk_guess and pk_guess != "--" else "id"
+        val_input = make_input("Match Val (e.g. 1)")
+        match_box.add_widget(col_input)
+        match_box.add_widget(val_input)
+        content.add_widget(match_box)
+        
+        content.add_widget(make_wrapped_label("JSON Payload (Only the fields you want to change):", color=TEXT, bold=True, min_height=dp(20)))
+        body_input = make_input(multiline=True, height=dp(150))
+        body_input.text = pretty_json({"your_column_name": "new_value"})
+        content.add_widget(body_input)
+        add_copy_clear_paste_row(content, body_input, label_for_copy="JSON Payload", include_copy=True)
+        
+        row = BoxLayout(size_hint_y=None, height=dp(42), spacing=dp(8))
+        submit_btn = NeonButton(text="Execute Update", bg_hex=GREEN)
+        close_btn = NeonButton(text="Cancel", bg_hex=CARD_2)
+        row.add_widget(submit_btn)
+        row.add_widget(close_btn)
+        content.add_widget(row)
+        
+        popup = Popup(
+            title=f"Direct Update - {table_name}", 
+            content=content, 
+            size_hint=(0.94, 0.75), 
+            separator_color=get_color_from_hex(CYAN),
+            background_color=get_color_from_hex(CARD)
+        )
+        
+        def _on_submit(*_):
+            col = str(col_input.text).strip()
+            val = str(val_input.text).strip()
+            if not col or not val:
+                info_popup("Missing Match Data", "Please provide both the matching column and value so the database knows which row to update.")
+                return
+            
+            payload = None
+            if body_input and str(body_input.text).strip():
+                try:
+                    payload = json.loads(body_input.text)
+                except Exception as e:
+                    info_popup("Invalid JSON", f"Please fix the JSON formatting:\n{e}")
+                    return
+            
+            popup.dismiss()
+            # Constructing the PostgREST URL with exact match parameter
+            endpoint = f"/rest/v1/{table_name}?{col}=eq.{val}"
+            self._execute_action(f"Update {table_name}", endpoint, "PATCH", payload, use_management=False, require_project_admin=True, success_callback=None)
+            
+        submit_btn.bind(on_release=_on_submit)
+        close_btn.bind(on_release=popup.dismiss)
+        popup.open()
+
+    def _execute_action(self, title, endpoint, method, payload, use_management, require_project_admin, success_callback):
+        self.set_status(f"Executing {title}...", loading=True)
+
+        def worker():
+            try:
+                cfg = self.cfg
+                if require_project_admin and not cfg.get("project_admin_key"):
+                    raise ValueError("Project admin/service key is required for this action.")
+                
+                if use_management:
+                    if method == "POST": management_post(cfg, endpoint, json_body=payload, timeout=self.settings_data.get("timeout_seconds", 40))
+                    elif method == "DELETE": management_delete(cfg, endpoint, json_body=payload, timeout=self.settings_data.get("timeout_seconds", 40))
+                else:
+                    if method == "POST": project_post(cfg, endpoint, json_body=payload, timeout=self.settings_data.get("timeout_seconds", 40))
+                    elif method == "PUT": project_put(cfg, endpoint, json_body=payload, timeout=self.settings_data.get("timeout_seconds", 40))
+                    elif method == "PATCH": project_patch(cfg, endpoint, json_body=payload, timeout=self.settings_data.get("timeout_seconds", 40))
+                    elif method == "DELETE": project_delete(cfg, endpoint, timeout=self.settings_data.get("timeout_seconds", 40))
+                
+                Clock.schedule_once(lambda *_: self._finish_action(title, "Action completed successfully.", False, success_callback), 0)
+            except Exception as e:
+                error_text = str(e)
+                Clock.schedule_once(lambda *_dt, msg=error_text: self._finish_action(title, msg, True, None), 0)
+        
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_action(self, title, message, is_error, success_callback):
+        self.stop_progress()
+        self.set_status("Action Failed" if is_error else "Ready", loading=False)
+        info_popup("Error" if is_error else "Success", message)
+        if not is_error and success_callback:
+            success_callback()
 
     # ---------------------------
     # Navigation + rendering
@@ -1313,6 +1655,11 @@ class SupabaseAdminRoot(BoxLayout):
     def switch_tab(self, key):
         self.current_tab = key
         self.render_current_tab()
+
+    def _open_in_sql(self, query):
+        self.sql_query_value = query
+        self.sql_result_value = "Run the query above to see results."
+        self.switch_tab("sql")
 
     def render_current_tab(self):
         self.body_box.clear_widgets()
@@ -1329,6 +1676,7 @@ class SupabaseAdminRoot(BoxLayout):
             "secrets": self.render_secrets,
             "usage": self.render_usage,
             "logs": self.render_logs,
+            "sql": self.render_sql,
             "settings": self.render_settings,
         }
         try:
@@ -1448,9 +1796,9 @@ class SupabaseAdminRoot(BoxLayout):
         go_overview.bind(on_release=lambda *_: self.switch_tab("overview"))
         go_usage = NeonButton(text="Open Usage", bg_hex=PURPLE)
         go_usage.bind(on_release=lambda *_: self.switch_tab("usage"))
-        go_logs = NeonButton(text="Open Logs", bg_hex=ORANGE)
-        go_logs.bind(on_release=lambda *_: self.switch_tab("logs"))
-        for btn in (go_conn, go_overview, go_usage, go_logs):
+        go_sql = NeonButton(text="Open SQL Editor", bg_hex=ORANGE)
+        go_sql.bind(on_release=lambda *_: self.switch_tab("sql"))
+        for btn in (go_conn, go_overview, go_usage, go_sql):
             actions.add_widget(btn)
         overview.add_widget(actions)
         self.body_box.add_widget(overview)
@@ -1527,7 +1875,7 @@ class SupabaseAdminRoot(BoxLayout):
         lines = [
             "Overview: PAT + admin/service key for full counts. PAT only gives partial management data.",
             "Projects / Functions / Secrets: PAT.",
-            "Users / Tables / Storage: project URL + admin/service key.",
+            "Users / Tables / Storage / SQL: project URL + admin/service key.",
             "Usage: PAT. Admin/service key improves fallbacks for MAU and storage totals.",
             "Logs: PAT + current project ref.",
             "Email/password: optional, only for auth flow testing.",
@@ -1635,12 +1983,23 @@ class SupabaseAdminRoot(BoxLayout):
             self.require_message("Users", ["Save the project URL and the project admin/service key first."])
             return
         self.add_refresh_row("Users", "Auth users from the current project.", load_callback=self._load_users, accent=CYAN)
-        search_card = SectionCard("User Filter", "Client-side filter for email, ID, provider, or phone.", accent=BLUE)
+        
+        search_card = SectionCard("User Action & Filter", "Client-side filter for email, ID, provider, or phone.", accent=BLUE)
         search = make_input("Search users")
         search.text = self.user_search_value
         search.bind(text=lambda _inst, value: self._set_user_filter(value))
         search_card.add_widget(search)
+        
+        # New Feature: Create User Button
+        create_btn = NeonButton(text="Create New User", bg_hex=GREEN, size_hint_y=None, height=dp(42))
+        create_btn.bind(on_release=lambda *_: self._action_popup(
+            "Create User", "/auth/v1/admin/users", method="POST", require_project_admin=True, 
+            payload_template={"email": "new@example.com", "password": "securepassword", "user_metadata": {}}, 
+            success_callback=self._load_users
+        ))
+        search_card.add_widget(create_btn)
         self.body_box.add_widget(search_card)
+        
         state = self.cache.get("users")
         if state is None:
             self._load_users()
@@ -1657,18 +2016,34 @@ class SupabaseAdminRoot(BoxLayout):
         stats.add_widget(make_stat_card(compact_count(providers), "Provider Types", PURPLE))
         info.add_widget(stats)
         self.body_box.add_widget(info)
+        
         for item in filtered[:200]:
-            email = str(item.get("email") or item.get("phone") or item.get("id") or "User")
+            uid = item.get("id")
+            email = str(item.get("email") or item.get("phone") or uid or "User")
             provider = item.get("provider") or (item.get("app_metadata", {}).get("provider") if isinstance(item.get("app_metadata"), dict) else "") or "--"
             lines = [
-                f"ID: {item.get('id') or '--'}",
+                f"ID: {uid or '--'}",
                 f"Provider: {provider}",
                 f"Created: {short_time(item.get('created_at'))}",
                 f"Last sign in: {short_time(item.get('last_sign_in_at'))}",
             ]
+            
+            # Action Buttons
             copy_id = NeonButton(text="Copy ID", bg_hex=BLUE)
-            copy_id.bind(on_release=lambda *_btn, uid=item.get("id"): copy_to_clipboard("User ID", uid))
-            self.body_box.add_widget(make_item_card(email, provider, lines, accent=CYAN, json_payload=item, extra_buttons=[copy_id]))
+            copy_id.bind(on_release=lambda *_btn, user_id=uid: copy_to_clipboard("User ID", user_id))
+            
+            edit_btn = NeonButton(text="Edit", bg_hex=ORANGE)
+            edit_btn.bind(on_release=lambda *_btn, user_id=uid, current_email=item.get("email"), meta=item.get("user_metadata", {}): self._action_popup(
+                "Edit User", f"/auth/v1/admin/users/{user_id}", method="PUT", require_project_admin=True,
+                payload_template={"email": current_email, "user_metadata": meta}, success_callback=self._load_users
+            ))
+
+            del_btn = NeonButton(text="Delete", bg_hex=RED)
+            del_btn.bind(on_release=lambda *_btn, user_id=uid: self._action_popup(
+                "Delete User", f"/auth/v1/admin/users/{user_id}", method="DELETE", require_project_admin=True, success_callback=self._load_users
+            ))
+
+            self.body_box.add_widget(make_item_card(email, provider, lines, accent=CYAN, json_payload=item, extra_buttons=[copy_id, edit_btn, del_btn]))
 
     def render_tables(self):
         has_project_meta = bool(self.cfg.get("project_url") and self.cfg.get("project_admin_key"))
@@ -1676,7 +2051,7 @@ class SupabaseAdminRoot(BoxLayout):
         if not (has_project_meta or has_management_fallback):
             self.require_message("Tables", ["Save either project URL + project admin/service key, or personal access token + project ref/URL first."])
             return
-        self.add_refresh_row("Tables", "Uses pg/meta when available, then falls back to the Management API OpenAPI spec if the meta endpoint is unavailable. Public-row previews need the project admin/service key.", load_callback=self._load_tables, accent=ORANGE)
+        self.add_refresh_row("Tables", "Uses pg/meta when available, then falls back to the Management API OpenAPI spec if the meta endpoint is unavailable.", load_callback=self._load_tables, accent=ORANGE)
         search_card = SectionCard("Table Filter", "Client-side filter for schema and table names.", accent=BLUE)
         search = make_input("Search tables")
         search.text = self.table_search_value
@@ -1718,14 +2093,35 @@ class SupabaseAdminRoot(BoxLayout):
                 lines.append(f"RLS enabled: {'Yes' if item.get('rls_enabled') else 'No'}")
             if item.get("bytes") not in (None, ""):
                 lines.append(f"Size bytes: {item.get('bytes')}")
+            
             buttons = []
-            if schema == "public" and self.cfg.get("project_url") and self.cfg.get("project_admin_key"):
+            
+            if self.cfg.get("project_url") and self.cfg.get("project_admin_key"):
                 preview_btn = NeonButton(text="Preview", bg_hex=CYAN)
                 preview_btn.bind(on_release=lambda *_btn, t=name, s=schema: self._preview_table_popup(t, s))
                 buttons.append(preview_btn)
+                
+                insert_btn = NeonButton(text="Insert Data", bg_hex=GREEN)
+                insert_btn.bind(on_release=lambda *_btn, t=name: self._action_popup(
+                    f"Insert to {t}", f"/rest/v1/{t}", method="POST", require_project_admin=True, 
+                    payload_template={"your_column": "value"}
+                ))
+                buttons.append(insert_btn)
+
+                pk_str = str(item.get('primary_key_text') or "id").split(",")[0].strip()
+                update_btn = NeonButton(text="Update Data", bg_hex=ORANGE)
+                update_btn.bind(on_release=lambda *_btn, t=name, pk=pk_str: self._update_row_popup(t, pk))
+                buttons.append(update_btn)
+
+            if self.cfg.get("project_admin_key"):
+                edit_schema_btn = NeonButton(text="Edit Schema", bg_hex=PURPLE)
+                edit_schema_btn.bind(on_release=lambda *_btn, s=schema, n=name: self._open_in_sql(f"ALTER TABLE {s}.{n}\nADD COLUMN new_column_name TEXT;"))
+                buttons.append(edit_schema_btn)
+
             copy_name = NeonButton(text="Copy Name", bg_hex=BLUE)
             copy_name.bind(on_release=lambda *_btn, value=f"{schema}.{name}": copy_to_clipboard("Table", value))
             buttons.append(copy_name)
+            
             light_payload = {
                 "schema": schema,
                 "name": name,
@@ -1736,6 +2132,7 @@ class SupabaseAdminRoot(BoxLayout):
                 "bytes": item.get("bytes"),
             }
             self.body_box.add_widget(make_item_card(name, schema, lines, accent=ORANGE, json_payload=light_payload, extra_buttons=buttons))
+        
         if total_rows > len(visible_rows):
             self.body_box.add_widget(make_item_card("Large table list", "Only the first 80 tables are rendered to keep the app stable on Android. Use the filter to narrow the list.", accent=BLUE))
 
@@ -1795,15 +2192,35 @@ class SupabaseAdminRoot(BoxLayout):
                 f"Verify JWT: {item.get('verify_jwt') if 'verify_jwt' in item else '--'}",
                 f"Updated: {short_time(item.get('updated_at'))}",
             ]
+            buttons = []
+            
+            if self.cfg.get("project_admin_key"):
+                edit_fn_btn = NeonButton(text="DB Function SQL", bg_hex=PURPLE)
+                edit_fn_btn.bind(on_release=lambda *_btn, n=name: self._open_in_sql(f"CREATE OR REPLACE FUNCTION public.{n.replace('-','_')}()\nRETURNS void AS $$\nBEGIN\n  -- Logic here\nEND;\n$$ LANGUAGE plpgsql;"))
+                buttons.append(edit_fn_btn)
+
             copy_slug = NeonButton(text="Copy Slug", bg_hex=CYAN)
             copy_slug.bind(on_release=lambda *_btn, slug=item.get("slug") or item.get("name"): copy_to_clipboard("Function", slug))
-            self.body_box.add_widget(make_item_card(name, subtitle, lines, accent=PURPLE, json_payload=item, extra_buttons=[copy_slug]))
+            buttons.append(copy_slug)
+            
+            self.body_box.add_widget(make_item_card(name, subtitle, lines, accent=PURPLE, json_payload=item, extra_buttons=buttons))
 
     def render_secrets(self):
         if not self.cfg.get("personal_access_token"):
             self.require_message("Secrets", ["Save the personal access token first."])
             return
         self.add_refresh_row("Secrets", "Function secrets and environment secret metadata from the management API.", load_callback=self._load_secrets, accent=YELLOW)
+        
+        # New Feature: Add Secret Button
+        action_card = SectionCard("Secret Actions", "Create new secrets.", accent=GREEN)
+        add_btn = NeonButton(text="Create Secret", bg_hex=GREEN, size_hint_y=None, height=dp(42))
+        add_btn.bind(on_release=lambda *_: self._action_popup(
+            "Add Secret", f"/projects/{current_ref(self.cfg)}/secrets", method="POST", use_management=True, 
+            payload_template=[{"name": "NEW_SECRET_KEY", "value": "secret_value"}], success_callback=self._load_secrets
+        ))
+        action_card.add_widget(add_btn)
+        self.body_box.add_widget(action_card)
+
         state = self.cache.get("secrets")
         if state is None:
             self._load_secrets()
@@ -1824,7 +2241,15 @@ class SupabaseAdminRoot(BoxLayout):
             ]
             copy_name = NeonButton(text="Copy Name", bg_hex=BLUE)
             copy_name.bind(on_release=lambda *_btn, value=name: copy_to_clipboard("Secret", value))
-            self.body_box.add_widget(make_item_card(name, digest, lines, accent=YELLOW, json_payload=item, extra_buttons=[copy_name]))
+            
+            # New Feature: Delete Secret
+            del_btn = NeonButton(text="Delete", bg_hex=RED)
+            del_btn.bind(on_release=lambda *_btn, n=name: self._action_popup(
+                "Delete Secret", f"/projects/{current_ref(self.cfg)}/secrets", method="DELETE", use_management=True,
+                payload_template=[n], success_callback=self._load_secrets
+            ))
+            
+            self.body_box.add_widget(make_item_card(name, digest, lines, accent=YELLOW, json_payload=item, extra_buttons=[copy_name, del_btn]))
 
     def render_usage(self):
         if not self.cfg.get("personal_access_token"):
@@ -1951,8 +2376,89 @@ class SupabaseAdminRoot(BoxLayout):
                     body_lines.append(f"{key}: {item.get(key)}")
             self.body_box.add_widget(make_item_card(title, subtitle, body_lines[:4], accent=ORANGE, json_payload=item))
 
+    # New Feature: SQL Execution Tab
+    def render_sql(self):
+        if not self.cfg.get("project_url") or not self.cfg.get("project_admin_key"):
+            self.require_message("SQL Editor", ["Save the project URL and the project admin/service key first."])
+            return
+            
+        card = SectionCard("SQL Editor", "Execute raw SQL statements against your database via the pg-meta API.", accent=GREEN)
+        
+        card.add_widget(make_wrapped_label("Query:", color=TEXT, bold=True))
+        query_input = make_input(multiline=True, height=dp(200))
+        query_input.text = self.sql_query_value
+        query_input.bind(text=lambda _inst, value: setattr(self, "sql_query_value", value))
+        card.add_widget(query_input)
+        
+        actions = BoxLayout(size_hint_y=None, height=dp(42), spacing=dp(8))
+        run_btn = NeonButton(text="Run SQL", bg_hex=RED)
+        run_btn.bind(on_release=lambda *_: self._execute_sql_query(query_input.text))
+        clear_btn = NeonButton(text="Clear Query", bg_hex=ORANGE)
+        clear_btn.bind(on_release=lambda *_: setattr(query_input, "text", ""))
+        actions.add_widget(run_btn)
+        actions.add_widget(clear_btn)
+        card.add_widget(actions)
+        
+        card.add_widget(make_wrapped_label("Results:", color=TEXT, bold=True))
+        result_input = make_input(multiline=True, readonly=True, height=dp(260))
+        result_input.text = self.sql_result_value
+        card.add_widget(result_input)
+        add_copy_clear_paste_row(card, result_input, label_for_copy="SQL Results", include_copy=True)
+        
+        self.body_box.add_widget(card)
+        
+        danger = SectionCard("Warning", "Data Definition Language (DDL)", accent=RED)
+        danger.add_widget(make_wrapped_label("Running ALTER, DROP, and CREATE commands directly edits your database schema. Proceed with extreme caution.", color=SUBTEXT))
+        self.body_box.add_widget(danger)
+
+    def _execute_sql_query(self, query):
+        if not str(query).strip():
+            info_popup("Empty Query", "Please enter a SQL query to execute.")
+            return
+            
+        self.set_status("Running query...", loading=True)
+        self.sql_result_value = "Executing..."
+        self.render_current_tab()
+
+        def worker():
+            try:
+                # Target our custom RPC backdoor instead of the blocked meta API
+                payload = {"sql_string": query}
+                data = project_post(self.cfg, "/rest/v1/rpc/exec_sql", json_body=payload, timeout=self.settings_data.get("timeout_seconds", 40))
+                
+                formatted_result = pretty_json(data)
+                Clock.schedule_once(lambda *_: self._finish_sql_query(formatted_result, False), 0)
+            except Exception as exc:
+                error_text = str(exc)
+                Clock.schedule_once(lambda *_dt, msg=error_text: self._finish_sql_query(msg, True), 0)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_sql_query(self, result_text, is_error):
+        self.stop_progress()
+        self.set_status("Query Failed" if is_error else "Query Complete", loading=False)
+        self.sql_result_value = result_text
+        self.render_current_tab()
+
     def render_settings(self):
         self.set_status("Settings ready", loading=False)
+        
+        # New Feature: App Security
+        sec_card = SectionCard("App Security", "Lock the app with a 4-digit PIN to prevent unauthorized access.", accent=YELLOW)
+        sec_row = BoxLayout(size_hint_y=None, height=dp(42), spacing=dp(8))
+        
+        pin_btn = NeonButton(text="Set / Change PIN", bg_hex=ORANGE)
+        pin_btn.bind(on_release=lambda *_: self._open_pin_setup_popup())
+        sec_row.add_widget(pin_btn)
+        
+        if self.settings_data.get("app_pin"):
+            remove_pin_btn = NeonButton(text="Remove PIN", bg_hex=RED)
+            remove_pin_btn.bind(on_release=lambda *_: self._remove_pin())
+            sec_row.add_widget(remove_pin_btn)
+            
+        sec_card.add_widget(sec_row)
+        self.body_box.add_widget(sec_card)
+
         card = SectionCard("Settings", "Small runtime settings for the standalone app.", accent=PURPLE)
         self.settings_inputs = {}
         for key, label in (("timeout_seconds", "Request Timeout (10-120)"), ("table_preview_rows", "Table Preview Rows (1-20)")):
@@ -2083,6 +2589,7 @@ class SupabaseAdminRoot(BoxLayout):
             "timeout_seconds": self.settings_inputs.get("timeout_seconds").text if self.settings_inputs.get("timeout_seconds") else 40,
             "table_preview_rows": self.settings_inputs.get("table_preview_rows").text if self.settings_inputs.get("table_preview_rows") else 5,
             "auto_load": self.settings_data.get("auto_load", True),
+            "app_pin": self.settings_data.get("app_pin", "")
         }
         save_settings(data)
         self.settings_data = load_settings()
