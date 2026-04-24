@@ -2827,10 +2827,368 @@ class SupabaseAdminRoot(BoxLayout):
         )
 
 
+
+# ============================================================
+# SHV SUPA — RSA LICENSE VERIFICATION SYSTEM
+# Admin panel generates SPA6A- codes signed with the private key.
+# This module verifies them against the embedded public key.
+# Device code = first 8 chars of SHA256(android_id or fallback).
+# ============================================================
+import base64
+import hashlib
+import json
+import textwrap
+import zlib
+
+import rsa
+
+SUPA_PUBLIC_KEY_PEM = b"""-----BEGIN RSA PUBLIC KEY-----
+MIIBCgKCAQEA4K3CjoUcMEcu48QeT7fss/mLdSXzzB0xQrZ+PkJrm1ggU45JTJhJ
+qcFcE8g9pAtjC8G9e9hj6GA4apajFgQ4VP4Q0RG3lFEQGGEIJ2x/JgbMAu4oJ4jR
+m39iPq0FArbwuA3K+wih15nHRxHnaAANqvAqso41+GfENGN2g7Kzhrd9EUwwV0Xe
+RW7yVCzNGKT2dAege4K7PQVs0Z8YZv45WP0ecc+V43pKKt0ZsE/mQJAQKfNGwk7A
+rStFyF8VRHfRvRp4qvnHSxGD/dhfuuWIbkkf+VWYINZEpKT0bVMQPlZRKuUFr2hR
+jDFF1cRSOdrvBzpx3lhHtEbk+OnZOURJ+QIDAQAB
+-----END RSA PUBLIC KEY-----"""
+
+SUPA_REVOCATION_RAW_URL = (
+    "https://raw.githubusercontent.com/therealwolfman97/"
+    "SH-VERTEX-ADMIN-PANEL/main/LICENSING/APPS/REVOCATIONS/supa-revo.json"
+)
+
+LICENSE_FILE = "shv_supa_license.json"
+REVOCATION_CACHE_FILE = "shv_supa_revo_cache.json"
+
+
+def _canonical_json(data):
+    return json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _get_device_code():
+    """Returns a stable 8-char uppercase device identifier."""
+    raw = ""
+    try:
+        from android.runpy import run_path  # noqa
+    except Exception:
+        pass
+    try:
+        from jnius import autoclass
+        Settings = autoclass("android.provider.Settings$Secure")
+        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+        context = PythonActivity.mActivity
+        raw = str(Settings.getString(context.getContentResolver(), Settings.ANDROID_ID) or "")
+    except Exception:
+        pass
+    if not raw:
+        try:
+            import uuid
+            raw = str(uuid.getnode())
+        except Exception:
+            raw = "fallback_device"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8].upper()
+
+
+def _decode_activation_code(code):
+    cleaned = code.strip().replace("\n", "").replace(" ", "")
+    if cleaned.startswith("SPA6A-"):
+        cleaned = cleaned[6:]
+    cleaned = cleaned.replace(".", "")
+    cleaned += "=" * ((4 - len(cleaned) % 4) % 4)
+    raw = base64.urlsafe_b64decode(cleaned.encode("ascii"))
+    data = json.loads(zlib.decompress(raw).decode("utf-8"))
+    return data["p"], data["s"]
+
+
+def _verify_signature(payload_dict, sig_b64):
+    try:
+        public_key = rsa.PublicKey.load_pkcs1(SUPA_PUBLIC_KEY_PEM)
+        sig = base64.urlsafe_b64decode(sig_b64.encode("ascii"))
+        rsa.verify(_canonical_json(payload_dict), sig, public_key)
+        return True
+    except Exception:
+        return False
+
+
+def _license_file_path():
+    try:
+        from kivy.app import App
+        app = App.get_running_app()
+        if app and getattr(app, "user_data_dir", None):
+            return os.path.join(app.user_data_dir, LICENSE_FILE)
+    except Exception:
+        pass
+    return os.path.join(os.path.expanduser("~"), LICENSE_FILE)
+
+
+def _revocation_cache_path():
+    try:
+        from kivy.app import App
+        app = App.get_running_app()
+        if app and getattr(app, "user_data_dir", None):
+            return os.path.join(app.user_data_dir, REVOCATION_CACHE_FILE)
+    except Exception:
+        pass
+    return os.path.join(os.path.expanduser("~"), REVOCATION_CACHE_FILE)
+
+
+def save_license(activation_code):
+    """Persist the activation code to disk after successful verification."""
+    data = {"activation_code": activation_code.strip()}
+    path = _license_file_path()
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+
+def load_saved_license():
+    """Return saved activation code string or empty string."""
+    try:
+        with open(_license_file_path(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return str(data.get("activation_code", "")).strip()
+    except Exception:
+        return ""
+
+
+def verify_activation_code(code, device_code=None):
+    """
+    Returns (ok: bool, tier: str, message: str).
+    Checks: signature valid, app matches, device_code matches, not expired.
+    """
+    if not code or not code.strip():
+        return False, "", "No activation code provided."
+    if device_code is None:
+        device_code = _get_device_code()
+    try:
+        payload, sig_b64 = _decode_activation_code(code.strip())
+    except Exception as e:
+        return False, "", f"Could not decode activation code: {e}"
+    if not _verify_signature(payload, sig_b64):
+        return False, "", "Invalid signature. Code may be tampered or for a different product."
+    if str(payload.get("app", "")).lower() != "shv_supa":
+        return False, "", "This activation code is not for SHV Supa."
+    bound_device = str(payload.get("device_code", "")).strip().upper()
+    if bound_device and bound_device != device_code.upper():
+        return False, "", (
+            f"Device mismatch.\nYour code: {device_code.upper()}\n"
+            f"Code bound to: {bound_device}"
+        )
+    expiry = str(payload.get("expires_at", "") or payload.get("expiry", "")).strip()
+    if expiry:
+        try:
+            from datetime import datetime, timezone
+            exp_dt = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+            if datetime.now(timezone.utc) > exp_dt:
+                return False, "", f"License expired on {expiry[:10]}."
+        except Exception:
+            pass
+    tier = str(payload.get("tier", "pro")).lower()
+    return True, tier, "License verified."
+
+
+def check_revocation(license_id, on_result=None):
+    """
+    Background thread: fetch revocation list, check if license_id is revoked.
+    Calls on_result(is_revoked: bool, error: str).
+    Caches result locally.
+    """
+    import threading
+
+    def _fetch():
+        try:
+            import requests as _req
+            resp = _req.get(SUPA_REVOCATION_RAW_URL, timeout=12)
+            if resp.status_code == 200:
+                bundle = resp.json()
+                payload = bundle.get("payload", bundle)
+                revoked_ids = [str(x).strip() for x in payload.get("revoked_ids", [])]
+                sig_b64 = bundle.get("signature", "")
+                if sig_b64:
+                    _verify_signature(payload, sig_b64)  # silently validate
+                cache = {"revoked_ids": revoked_ids}
+                try:
+                    with open(_revocation_cache_path(), "w", encoding="utf-8") as f:
+                        json.dump(cache, f)
+                except Exception:
+                    pass
+                is_revoked = str(license_id).strip() in revoked_ids
+                if on_result:
+                    from kivy.clock import Clock
+                    Clock.schedule_once(lambda dt: on_result(is_revoked, ""), 0)
+            else:
+                _fallback_cache_check(license_id, on_result)
+        except Exception as e:
+            _fallback_cache_check(license_id, on_result, str(e))
+
+    threading.Thread(target=_fetch, daemon=True).start()
+
+
+def _fallback_cache_check(license_id, on_result, error=""):
+    try:
+        with open(_revocation_cache_path(), "r", encoding="utf-8") as f:
+            cache = json.load(f)
+        revoked_ids = [str(x).strip() for x in cache.get("revoked_ids", [])]
+        is_revoked = str(license_id).strip() in revoked_ids
+        if on_result:
+            from kivy.clock import Clock
+            Clock.schedule_once(lambda dt: on_result(is_revoked, ""), 0)
+    except Exception:
+        if on_result:
+            from kivy.clock import Clock
+            Clock.schedule_once(lambda dt: on_result(False, error), 0)
+
+
+# ============================================================
+# ACTIVATION GATE — shown before the main app if not licensed
+# ============================================================
+
+class ActivationGate(BoxLayout):
+    """Full-screen activation entry shown when no valid license is found."""
+
+    def __init__(self, on_activated, **kwargs):
+        super().__init__(orientation="vertical", padding=dp(24), spacing=dp(16), **kwargs)
+        self._on_activated = on_activated
+        self._device_code = _get_device_code()
+        self._build()
+
+    def _build(self):
+        from kivy.graphics import Color, RoundedRectangle
+        with self.canvas.before:
+            Color(rgba=get_color_from_hex(BG))
+            self._bg_rect = RoundedRectangle(pos=self.pos, size=self.size)
+        self.bind(pos=self._upd, size=self._upd)
+
+        self.add_widget(Label(
+            text="SHV Supa", font_size="28sp", bold=True,
+            color=get_color_from_hex(CYAN),
+            size_hint_y=None, height=dp(44)))
+        self.add_widget(Label(
+            text="Standalone Supabase Management",
+            font_size="14sp", color=get_color_from_hex(SUBTEXT),
+            size_hint_y=None, height=dp(28)))
+        self.add_widget(Label(
+            text="Activate Pro License",
+            font_size="18sp", bold=True,
+            color=get_color_from_hex(TEXT),
+            size_hint_y=None, height=dp(36)))
+
+        device_lbl = Label(
+            text=f"Your Device Code:  {self._device_code}",
+            font_size="13sp", color=get_color_from_hex(CYAN),
+            size_hint_y=None, height=dp(28),
+            halign="center", valign="middle")
+        device_lbl.bind(size=lambda inst, val: setattr(inst, "text_size", val))
+        self.add_widget(device_lbl)
+
+        copy_btn = self._make_btn("Copy Device Code", CYAN)
+        copy_btn.bind(on_release=lambda *_: self._copy_device_code())
+        self.add_widget(copy_btn)
+
+        self.add_widget(Label(
+            text="Paste your SPA6A- activation code below:",
+            font_size="13sp", color=get_color_from_hex(SUBTEXT),
+            size_hint_y=None, height=dp(28),
+            halign="center", valign="middle"))
+
+        self._code_input = TextInput(
+            hint_text="SPA6A-XXXX.XXXX.XXXX...",
+            multiline=True,
+            size_hint_y=None, height=dp(110),
+            background_color=get_color_from_hex("#111111"),
+            foreground_color=get_color_from_hex(TEXT),
+            cursor_color=(1, 0, 0, 1), cursor_width="2sp",
+            hint_text_color=get_color_from_hex(SUBTEXT),
+            padding=[dp(10), dp(10), dp(10), dp(10)])
+        self.add_widget(self._code_input)
+
+        paste_btn = self._make_btn("Paste from Clipboard", CYAN)
+        paste_btn.bind(on_release=lambda *_: self._paste())
+        self.add_widget(paste_btn)
+
+        self._status_lbl = Label(
+            text="", font_size="13sp",
+            color=get_color_from_hex(RED),
+            size_hint_y=None, height=dp(44),
+            halign="center", valign="middle")
+        self._status_lbl.bind(size=lambda inst, val: setattr(inst, "text_size", val))
+        self.add_widget(self._status_lbl)
+
+        activate_btn = self._make_btn("Activate", GREEN)
+        activate_btn.bind(on_release=lambda *_: self._attempt_activate())
+        self.add_widget(activate_btn)
+
+    def _upd(self, *_):
+        self._bg_rect.pos = self.pos
+        self._bg_rect.size = self.size
+
+    def _make_btn(self, text, color):
+        btn = Button(
+            text=text, size_hint_y=None, height=dp(46),
+            background_normal="", background_down="",
+            background_color=get_color_from_hex(color),
+            color=get_color_from_hex(TEXT), bold=True)
+        return btn
+
+    def _copy_device_code(self):
+        Clipboard.copy(self._device_code)
+        self._set_status(f"Device code {self._device_code} copied!", color=CYAN)
+
+    def _paste(self):
+        try:
+            pasted = Clipboard.paste() or ""
+            if pasted.strip():
+                self._code_input.text = pasted.strip()
+            else:
+                self._set_status("Clipboard is empty.", color=RED)
+        except Exception as e:
+            self._set_status(f"Paste failed: {e}", color=RED)
+
+    def _attempt_activate(self):
+        code = self._code_input.text.strip()
+        if not code:
+            self._set_status("Please paste your activation code.", color=RED)
+            return
+        self._set_status("Verifying...", color=SUBTEXT)
+        ok, tier, message = verify_activation_code(code, self._device_code)
+        if ok:
+            save_license(code)
+            self._set_status("License activated successfully!", color=GREEN)
+            Clock.schedule_once(lambda dt: self._on_activated(tier), 0.6)
+        else:
+            self._set_status(message, color=RED)
+
+    def _set_status(self, text, color=RED):
+        self._status_lbl.text = text
+        self._status_lbl.color = get_color_from_hex(color)
+
+# ============================================================
+# End of license system — main app classes follow below
+# ============================================================
+
 class SupabaseAdminApp(App):
     def build(self):
         self.title = APP_TITLE
-        return SupabaseAdminRoot()
+        self._root_host = BoxLayout()
+        saved_code = load_saved_license()
+        if saved_code:
+            ok, tier, message = verify_activation_code(saved_code)
+            if ok:
+                self._launch_main(tier)
+                return self._root_host
+        self._show_activation_gate()
+        return self._root_host
+
+    def _show_activation_gate(self):
+        self._root_host.clear_widgets()
+        gate = ActivationGate(on_activated=self._on_license_activated)
+        self._root_host.add_widget(gate)
+
+    def _on_license_activated(self, tier):
+        self._launch_main(tier)
+
+    def _launch_main(self, tier):
+        self._root_host.clear_widgets()
+        main = SupabaseAdminRoot()
+        self._root_host.add_widget(main)
 
 
 if __name__ == "__main__":
