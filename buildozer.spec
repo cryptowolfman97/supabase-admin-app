@@ -1,8 +1,8 @@
 [app]
 
 # App identity
-title = Supabase Admin by SHV
-package.name = supabaseadminbyshv
+title = SHV Supa
+package.name = shvsupa
 package.domain = online.shvertex
 
 # Source
@@ -11,7 +11,7 @@ source.include_exts = py,png,jpg,jpeg,kv,atlas,json,txt,ttf,otf,wav,mp3
 source.exclude_dirs = .git,__pycache__,bin,.buildozer,venv,.venv,tests
 
 # Version
-version = 1
+version = 2
 
 # Requirements
 # Add/remove packages here based on your actual imports in main.py
