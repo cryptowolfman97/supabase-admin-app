@@ -1,4 +1,4 @@
-name: Build Supabase Admin APK
+name: Build SHV Supa APK
 
 on:
   push:
@@ -51,5 +51,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: simplibudget-apk
+          name: SHV-Supa-apk
           path: bin/*.apk
