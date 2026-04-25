@@ -17,6 +17,8 @@ version = 2
 # Add/remove packages here based on your actual imports in main.py
 requirements = python3,kivy,requests,certifi,rsa,pyasn1
 
+icon.adaptive_foreground.filename = foreground.png
+icon.adaptive_background.filename = background.png
 # Display
 orientation = portrait
 fullscreen = 0
